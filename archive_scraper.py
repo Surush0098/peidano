@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import requests
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright
@@ -120,8 +121,15 @@ def run_scraper():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
+        
+        # اضافه کردن هدرهای واقعی برای فریب کلودفلر
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            }
         )
         page = context.new_page()
 
@@ -139,15 +147,16 @@ def run_scraper():
             try:
                 page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 
-                # --- تغییر حیاتی: اجبار به صبر تا دیدن لینک پست ---
-                print("   Waiting for content to hydrate...", flush=True)
-                try:
-                    # صبر میکنیم تا اولین لینک محصول ظاهر شود
-                    page.wait_for_selector('a[href*="/posts/"]', timeout=30000)
-                except:
-                    print("⚠️ Timeout waiting for /posts/ links. Page might be empty or diff structure.", flush=True)
-
-                time.sleep(3)
+                # --- حل چالش Cloudflare ---
+                print("   Checking for Cloudflare...", flush=True)
+                for _ in range(10): # 20 ثانیه تلاش برای حل چالش
+                    title = page.title()
+                    if "Just a moment" not in title and "Cloudflare" not in title:
+                        break
+                    # تکان دادن موس برای اثبات انسان بودن
+                    page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+                    time.sleep(2)
+                
                 print(f"   Page Title: {page.title()}", flush=True)
 
                 for _ in range(5):
@@ -155,7 +164,7 @@ def run_scraper():
                     time.sleep(1)
 
                 all_links = page.locator('a[href*="/posts/"]').all()
-                print(f"   Raw product links found: {len(all_links)}", flush=True)
+                print(f"   Raw links found: {len(all_links)}", flush=True)
                 
                 unique_products = []
                 seen_urls = set()
@@ -178,7 +187,9 @@ def run_scraper():
                 print(f"   Filtered Products: {len(items)}", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Skipping month logic...", flush=True)
+                    print("❌ No items found (Cloudflare might still be blocking).", flush=True)
+                    # اگر باز هم نشد، پرینت کن ببینیم چی می‌بینه
+                    print(page.content()[:300])
                     break
 
                 current_idx = state['product_idx']
