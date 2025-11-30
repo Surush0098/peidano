@@ -42,7 +42,7 @@ def save_state(state):
     except: pass
 
 def generate_content(product_name, original_desc, maker_comment, launch_date):
-    print(f"   Generating AI content for {product_name}...", flush=True)
+    print(f"   Generating AI content...", flush=True)
     combined_text = f"Main Description: {original_desc}\n\nMaker's Comment: {maker_comment}"
 
     prompt_pitch = f"""
@@ -120,9 +120,12 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        # تغییر مهم: اضافه کردن آرگومان no-sandbox برای جلوگیری از کرش در سرور
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        page = browser.new_page()
+        # تغییر مهم: جعل هویت مرورگر واقعی
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'])
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
 
         while state['month'] == current_run_month:
             year = state['year']
@@ -132,22 +135,40 @@ def run_scraper():
                 print("End of years reached.", flush=True)
                 break
 
-            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}/all"
+            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}" # حذف /all برای اطمینان
             print(f"📄 Opening Monthly List: {url}", flush=True)
             
             try:
-                page.goto(url, timeout=60000)
-                page.wait_for_selector('div[class*="styles_item__"]', timeout=20000)
+                page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 
+                # تلاش برای پیدا کردن لیست با سلکتورهای منعطف‌تر
+                try:
+                    # صبر میکنیم تا هر چیزی که شبیه آیتم لیسته لود بشه
+                    page.wait_for_selector('div[class*="styles_item"]', timeout=20000)
+                except:
+                    print("⚠️ Timeout waiting for list. Trying to extract anyway...", flush=True)
+
                 # اسکرول
-                for _ in range(5):
+                for _ in range(3):
                     page.mouse.wheel(0, 1000)
                     time.sleep(1)
 
-                items = page.locator('div[class*="styles_item__"]').all()
+                # پیدا کردن آیتم‌ها با سلکتور کلی‌تر
+                items = page.locator('div[class*="styles_item"]').all()
+                
+                # اگر آیتم پیدا نشد، شاید ساختار فرق کرده، یک تلاش دیگه با لینک‌ها
+                if not items:
+                    print("⚠️ Standard selector failed. Trying fallback...", flush=True)
+                    # پیدا کردن لینک‌هایی که به /posts/ میرن و داخلشون عکس هست
+                    items = page.locator('a[href*="/posts/"]').all()
+
                 items = items[:TOP_N_MONTHLY]
                 print(f"   Found {len(items)} items.", flush=True)
                 
+                if not items:
+                    print("❌ No items found. Possible Block or Layout Change.", flush=True)
+                    break
+
                 current_idx = state['product_idx']
                 
                 if current_idx >= len(items):
@@ -163,44 +184,52 @@ def run_scraper():
                 item = items[current_idx]
                 
                 try:
-                    title_el = item.locator('a[class*="styles_title__"]').first
-                    title = title_el.inner_text()
-                    ph_link = "https://www.producthunt.com" + title_el.get_attribute("href")
-                    
-                    tag_els = item.locator('a[class*="styles_topic__"]').all()
-                    tags = [t.inner_text() for t in tag_els]
-                    hashtags = " ".join([f"#{t.replace(' ', '')}" for t in tags])
+                    # استخراج لینک و تگ (با هندل کردن ارورهای احتمالی)
+                    # اگر آیتم خودِ لینک باشه (در روش فال‌بک) یا کانتینر باشه
+                    if await item.get_attribute("href"):
+                         ph_link = "https://www.producthunt.com" + item.get_attribute("href")
+                         title = item.inner_text().split('\n')[0] # حدس زدن تیتر
+                         hashtags = "#Tech"
+                    else:
+                        # روش استاندارد
+                        title_el = item.locator('a[class*="styles_title"]').first
+                        title = title_el.inner_text()
+                        ph_link = "https://www.producthunt.com" + title_el.get_attribute("href")
+                        
+                        tag_els = item.locator('a[class*="styles_topic"]').all()
+                        tags = [t.inner_text() for t in tag_els]
+                        hashtags = " ".join([f"#{t.replace(' ', '')}" for t in tags])
                     
                     print(f"🔍 Processing Product: {title}", flush=True)
                     
                 except:
-                    print("   Error reading list item, skipping.", flush=True)
+                    print("   Error reading list item info, trying next...", flush=True)
                     state['product_idx'] += 1
                     continue
 
-                p_page = browser.new_page()
+                p_page = context.new_page()
                 try:
-                    p_page.goto(ph_link, timeout=60000)
-                    time.sleep(3)
+                    p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
+                    time.sleep(2)
                     
                     try:
                         website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
                     except: website = ph_link
 
                     try:
-                        desc = p_page.locator('div[class*="styles_description__"]').first.inner_text()
+                        desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
                     except: desc = title
 
                     maker_comment = ""
                     try:
-                        comment_el = p_page.locator('div[class*="styles_commentBody__"]').first
+                        comment_el = p_page.locator('div[class*="styles_commentBody"]').first
                         if comment_el.is_visible():
                             maker_comment = comment_el.inner_text()
                     except: pass
 
                     images = []
                     try:
-                        img_els = p_page.locator('img[class*="styles_mediaImage__"]').all()
+                        img_els = p_page.locator('img[class*="styles_mediaImage"]').all()
                         for img in img_els:
                             src = img.get_attribute("src")
                             if src and "http" in src:
@@ -235,6 +264,8 @@ def run_scraper():
             except Exception as e:
                 print(f"❌ Error loading monthly page: {e}", flush=True)
                 time.sleep(10)
+                # اگر ارور کلی بود، احتمالا بلوک شدیم، خارج شو تا دفعه بعد
+                break 
 
 if __name__ == "__main__":
     run_scraper()
