@@ -120,17 +120,10 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        # تنظیمات دستی مرورگر برای استتار (بدون نیاز به کتابخانه اضافی)
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            java_script_enabled=True
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         )
-        
-        # تزریق اسکریپت برای مخفی کردن کامل webdriver
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
         page = context.new_page()
 
         while state['month'] == current_run_month:
@@ -148,33 +141,42 @@ def run_scraper():
                 page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 time.sleep(5)
                 
-                # چاپ عنوان صفحه برای دیباگ
                 print(f"   Page Title: {page.title()}", flush=True)
 
+                # اسکرول سنگین برای لود شدن
                 for _ in range(5):
-                    page.mouse.wheel(0, 1500)
+                    page.mouse.wheel(0, 3000)
                     time.sleep(1)
 
-                product_links = page.locator('div[class*="styles_item"] a[href^="/posts/"]').all()
+                # --- تغییر استراتژی: پیدا کردن همه لینک‌های پست ---
+                # به جای کلاس خاص، دنبال هر تگ <a> میگردیم که href اش با /posts/ شروع بشه
+                all_links = page.locator('a[href^="/posts/"]').all()
                 
-                unique_links = []
+                unique_products = []
                 seen_urls = set()
                 
-                for link in product_links:
+                print(f"   Raw links found: {len(all_links)}", flush=True)
+
+                for link in all_links:
                     try:
                         href = link.get_attribute("href")
-                        if href and "/posts/" in href and "#" not in href and "reviews" not in href:
+                        # فیلتر کردن لینک‌های نامربوط
+                        if href and "/posts/" in href and "#" not in href and "/reviews" not in href:
                             full_url = "https://www.producthunt.com" + href
+                            
                             if full_url not in seen_urls:
-                                unique_links.append({"url": full_url, "element": link})
-                                seen_urls.add(full_url)
+                                # چک میکنیم که آیا این لینک واقعا یه محصوله (معمولا تایتل داره)
+                                text = link.inner_text().strip()
+                                if text: 
+                                    unique_products.append({"url": full_url, "title": text})
+                                    seen_urls.add(full_url)
                     except: pass
 
-                items = unique_links[:TOP_N_MONTHLY]
-                print(f"   Found {len(items)} products.", flush=True)
+                items = unique_products[:TOP_N_MONTHLY]
+                print(f"   Filtered Products: {len(items)}", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Check Page Title above.", flush=True)
+                    print("❌ Still no items. Verify manually.", flush=True)
                     break
 
                 current_idx = state['product_idx']
@@ -192,22 +194,20 @@ def run_scraper():
                 item_data = items[current_idx]
                 ph_link = item_data['url']
                 
-                try:
-                    title = item_data['element'].inner_text().split('\n')[0]
-                except: title = "Unknown Product"
+                # تمیزکاری تیتر (گاهی اوقات متن اضافی داره)
+                title = item_data['title'].split('\n')[0]
 
-                print(f"🔍 Processing: {ph_link}", flush=True)
+                print(f"🔍 Processing: {title} ({ph_link})", flush=True)
 
                 p_page = context.new_page()
-                # تزریق اسکریپت مخفی‌کاری در تب جدید هم انجام شود
-                p_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-                
                 try:
                     p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
                     time.sleep(3)
                     
                     try:
-                        title = p_page.locator('h1').first.inner_text()
+                        # تلاش برای گرفتن تایتل دقیق‌تر از داخل صفحه
+                        h1 = p_page.locator('h1').first.inner_text()
+                        if h1: title = h1
                     except: pass
 
                     try:
