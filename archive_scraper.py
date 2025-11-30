@@ -1,10 +1,10 @@
 import os
 import json
 import time
-import random
 import requests
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
@@ -53,7 +53,7 @@ def generate_content(product_name, original_desc, maker_comment, launch_date):
     وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
     قوانین:
     1. منبع: به متن "Maker's Comment" اولویت بده.
-    2. لحن راوی: سوم شخص (دانای کل).
+    2. لحن: سوم شخص (دانای کل).
     3. محتوا: چیست؟ چه مشکلی را حل می‌کند؟ چه ویژگی‌هایی دارد؟
     4. طول: 5 تا 15 خط.
     5. زبان: فارسی روان.
@@ -123,7 +123,6 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        # تنظیمات دسکتاپ (بر اساس فایل HTML صحیح شما)
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -134,86 +133,58 @@ def run_scraper():
         while state['month'] == current_run_month:
             year = state['year']
             month = state['month']
-            
-            if year >= END_YEAR:
-                print("End of years reached.", flush=True)
-                break
+            if year >= END_YEAR: break
 
             url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
             print(f"📄 Opening: {url}", flush=True)
             
             try:
-                page.goto(url, timeout=90000, wait_until="domcontentloaded")
-                
-                # --- اصلاح حیاتی: انتظار برای هر نوع لینک محصول ---
-                print("   Waiting for content...", flush=True)
-                try:
-                    # اینجا هم posts و هم products رو چک میکنیم (طبق فایل HTML شما)
-                    page.wait_for_selector('a[href*="/posts/"], a[href*="/products/"]', timeout=30000)
-                except:
-                    print("⚠️ Wait timeout. Proceeding to scroll...", flush=True)
+                page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                time.sleep(5) # کمی صبر برای لود اولیه
 
-                time.sleep(3)
+                # --- استخراج با BeautifulSoup (روش جدید) ---
+                html_content = page.content()
+                soup = BeautifulSoup(html_content, 'html.parser')
                 
-                # اسکرول برای لود کامل
-                for _ in range(5):
-                    page.mouse.wheel(0, 3000)
-                    time.sleep(1)
-
-                # استراتژی 1: استفاده از data-test (دقیق‌ترین روش طبق فایل شما)
-                items_locator = page.locator('[data-test^="post-item-"]').all()
+                # پیدا کردن آیتم‌ها بر اساس data-test (دقیق مثل فایل شما)
+                # این سلکتور یعنی: هر تگی که خاصیت data-test دارد و مقدارش با post-item- شروع می‌شود
+                items = soup.select('[data-test^="post-item-"]')
                 
-                unique_products = []
-                seen_urls = set()
+                # اگر پیدا نکرد، فال‌بک به لینک‌ها
+                if not items:
+                    print("⚠️ data-test not found via BS4. Trying fallback links...", flush=True)
+                    # ساختار دستی لینک‌ها
+                    links = soup.find_all('a', href=True)
+                    temp_items = []
+                    seen = set()
+                    for link in links:
+                        href = link['href']
+                        if ("/posts/" in href or "/products/" in href) and "#" not in href:
+                            full = "https://www.producthunt.com" + href if href.startswith("/") else href
+                            if full not in seen:
+                                temp_items.append({"url": full, "bs4_element": link})
+                                seen.add(full)
+                    items = temp_items
+                else:
+                    # تبدیل آیتم‌های data-test به فرمت قابل استفاده
+                    valid_items = []
+                    for item in items:
+                        # پیدا کردن لینک داخل آیتم
+                        link_tag = item.find('a', href=True)
+                        if link_tag:
+                            href = link_tag['href']
+                            full = "https://www.producthunt.com" + href if href.startswith("/") else href
+                            valid_items.append({"url": full, "bs4_element": item})
+                    items = valid_items
 
-                # اگر data-test کار کرد (مثل فایل HTML شما)
-                if items_locator:
-                    print(f"   Found {len(items_locator)} items via data-test.", flush=True)
-                    for item in items_locator:
-                        try:
-                            # پیدا کردن لینک داخل باکس
-                            link_el = item.locator('a').first
-                            href = link_el.get_attribute("href")
-                            if href:
-                                full_url = "https://www.producthunt.com" + href
-                                if full_url not in seen_urls:
-                                    title = item.inner_text().split('\n')[0]
-                                    unique_products.append({"url": full_url, "title": title, "element": item})
-                                    seen_urls.add(full_url)
-                        except: pass
-                
-                # اگر استراتژی 1 نشد، استراتژی 2 (پیدا کردن لینک‌ها)
-                if not unique_products:
-                    print("⚠️ data-test failed. Trying generic links...", flush=True)
-                    all_links = page.locator('a').all()
-                    for link in all_links:
-                        try:
-                            href = link.get_attribute("href")
-                            if not href: continue
-                            # شرط اصلاح شده: هم posts هم products
-                            if ("/posts/" in href or "/products/" in href) and "#" not in href and "/reviews" not in href:
-                                full_url = "https://www.producthunt.com" + href
-                                if full_url not in seen_urls:
-                                    text = link.inner_text().strip()
-                                    if text and len(text) > 1:
-                                        unique_products.append({"url": full_url, "title": text})
-                                        seen_urls.add(full_url)
-                        except: pass
-
-                items = unique_products[:TOP_N_MONTHLY]
-                print(f"   Final List: {len(items)} products.", flush=True)
+                items = items[:TOP_N_MONTHLY]
+                print(f"   Found {len(items)} products via HTML Parsing.", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Skipping month.", flush=True)
-                    state['month'] += 1 # جلوگیری از لوپ بی نهایت
-                    if state['month'] > 12:
-                        state['month'] = 1
-                        state['year'] += 1
-                    save_state(state)
+                    print("❌ No items found even in raw HTML. Blocking likely active.", flush=True)
                     break
 
                 current_idx = state['product_idx']
-                
                 if current_idx >= len(items):
                     print("   Month finished! Next.", flush=True)
                     state['month'] += 1
@@ -226,10 +197,17 @@ def run_scraper():
 
                 item_data = items[current_idx]
                 ph_link = item_data['url']
-                title = item_data['title'].split('\n')[0]
+                
+                # استخراج عنوان از BS4
+                try:
+                    if 'bs4_element' in item_data:
+                         title = item_data['bs4_element'].get_text(strip=True).split('\n')[0]
+                    else: title = "Product"
+                except: title = "Product"
 
                 print(f"🔍 Processing: {title}", flush=True)
 
+                # برای جزئیات محصول، دوباره از مرورگر استفاده می‌کنیم (برای عکس‌ها)
                 p_page = context.new_page()
                 try:
                     p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
