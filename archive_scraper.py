@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import requests
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright
@@ -24,14 +25,13 @@ MONTHS = {
 }
 
 def load_state():
-    default_state = {"year": START_YEAR, "month": 1, "product_idx": 0, "status": "MONTHLY"}
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 content = f.read().strip()
-                return json.loads(content) if content else default_state
-        except: return default_state
-    return default_state
+                return json.loads(content) if content else {"year": START_YEAR, "month": 1, "product_idx": 0, "status": "MONTHLY"}
+        except: pass
+    return {"year": START_YEAR, "month": 1, "product_idx": 0, "status": "MONTHLY"}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -53,7 +53,7 @@ def generate_content(product_name, original_desc, maker_comment, launch_date):
     وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
     قوانین:
     1. منبع: به متن "Maker's Comment" اولویت بده.
-    2. لحن: سوم شخص (دانای کل).
+    2. لحن راوی: سوم شخص (دانای کل).
     3. محتوا: چیست؟ چه مشکلی را حل می‌کند؟ چه ویژگی‌هایی دارد؟
     4. طول: 5 تا 15 خط.
     5. زبان: فارسی روان.
@@ -120,13 +120,14 @@ def run_scraper():
     state = load_state()
     current_run_month = state['month']
     
-    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']}", flush=True)
+    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
+        # تنظیمات دسکتاپ (بر اساس فایل HTML صحیح شما)
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            viewport={"width": 390, "height": 844}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
         )
         page = context.new_page()
 
@@ -143,60 +144,76 @@ def run_scraper():
             
             try:
                 page.goto(url, timeout=90000, wait_until="domcontentloaded")
-                time.sleep(5)
-                print(f"   Page Title: {page.title()}", flush=True)
+                
+                # --- اصلاح حیاتی: انتظار برای هر نوع لینک محصول ---
+                print("   Waiting for content...", flush=True)
+                try:
+                    # اینجا هم posts و هم products رو چک میکنیم (طبق فایل HTML شما)
+                    page.wait_for_selector('a[href*="/posts/"], a[href*="/products/"]', timeout=30000)
+                except:
+                    print("⚠️ Wait timeout. Proceeding to scroll...", flush=True)
 
+                time.sleep(3)
+                
+                # اسکرول برای لود کامل
                 for _ in range(5):
                     page.mouse.wheel(0, 3000)
                     time.sleep(1)
 
-                # --- استراتژی تورِ بزرگ (Broad Sweep) ---
-                # گرفتن همه لینک‌ها
-                all_links = page.locator('a').all()
-                print(f"   Total links found: {len(all_links)}", flush=True)
-
+                # استراتژی 1: استفاده از data-test (دقیق‌ترین روش طبق فایل شما)
+                items_locator = page.locator('[data-test^="post-item-"]').all()
+                
                 unique_products = []
                 seen_urls = set()
+
+                # اگر data-test کار کرد (مثل فایل HTML شما)
+                if items_locator:
+                    print(f"   Found {len(items_locator)} items via data-test.", flush=True)
+                    for item in items_locator:
+                        try:
+                            # پیدا کردن لینک داخل باکس
+                            link_el = item.locator('a').first
+                            href = link_el.get_attribute("href")
+                            if href:
+                                full_url = "https://www.producthunt.com" + href
+                                if full_url not in seen_urls:
+                                    title = item.inner_text().split('\n')[0]
+                                    unique_products.append({"url": full_url, "title": title, "element": item})
+                                    seen_urls.add(full_url)
+                        except: pass
                 
-                # لیست سیاه لینک‌های منو و ناوبری
-                banned_words = ["subscribe", "sign in", "login", "newsletter", "twitter", "facebook", 
-                                "instagram", "linkedin", "about", "branding", "jobs", "leaderboard", 
-                                "topics", "discussions", "stories", "alternatives", "search"]
+                # اگر استراتژی 1 نشد، استراتژی 2 (پیدا کردن لینک‌ها)
+                if not unique_products:
+                    print("⚠️ data-test failed. Trying generic links...", flush=True)
+                    all_links = page.locator('a').all()
+                    for link in all_links:
+                        try:
+                            href = link.get_attribute("href")
+                            if not href: continue
+                            # شرط اصلاح شده: هم posts هم products
+                            if ("/posts/" in href or "/products/" in href) and "#" not in href and "/reviews" not in href:
+                                full_url = "https://www.producthunt.com" + href
+                                if full_url not in seen_urls:
+                                    text = link.inner_text().strip()
+                                    if text and len(text) > 1:
+                                        unique_products.append({"url": full_url, "title": text})
+                                        seen_urls.add(full_url)
+                        except: pass
 
-                for link in all_links:
-                    try:
-                        href = link.get_attribute("href")
-                        text = link.inner_text().strip()
-                        
-                        if not href or not text: continue
-                        
-                        href_lower = href.lower()
-                        # فیلتر کردن لینک‌های نامربوط
-                        if any(banned in href_lower for banned in banned_words): continue
-                        if len(text) < 2 or len(text) > 50: continue # تیتر محصول معمولا بین 2 تا 50 حرفه
-                        if href.startswith("/@"): continue # پروفایل کاربرها
-                        
-                        # لینک محصول باید داخلی باشه (با / شروع شه) و شامل موارد بالا نباشه
-                        if href.startswith("/") and not href.startswith("//"):
-                            full_url = "https://www.producthunt.com" + href
-                            
-                            if full_url not in seen_urls:
-                                unique_products.append({"url": full_url, "title": text})
-                                seen_urls.add(full_url)
-                                # چاپ لینک برای دیباگ (که ببینیم چی پیدا کرده)
-                                # print(f"Found candidate: {text} -> {full_url}") 
-                    except: pass
-
-                # فیلتر نهایی: فقط 25 تای اول که شبیه محصول هستن رو برمیداریم
-                # معمولا محصولات بعد از لینک های هدر میان
                 items = unique_products[:TOP_N_MONTHLY]
-                print(f"   Filtered Candidates: {len(items)}", flush=True)
+                print(f"   Final List: {len(items)} products.", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Page structure might be very different.", flush=True)
+                    print("❌ No items found. Skipping month.", flush=True)
+                    state['month'] += 1 # جلوگیری از لوپ بی نهایت
+                    if state['month'] > 12:
+                        state['month'] = 1
+                        state['year'] += 1
+                    save_state(state)
                     break
 
                 current_idx = state['product_idx']
+                
                 if current_idx >= len(items):
                     print("   Month finished! Next.", flush=True)
                     state['month'] += 1
@@ -209,7 +226,7 @@ def run_scraper():
 
                 item_data = items[current_idx]
                 ph_link = item_data['url']
-                title = item_data['title']
+                title = item_data['title'].split('\n')[0]
 
                 print(f"🔍 Processing: {title}", flush=True)
 
@@ -220,11 +237,13 @@ def run_scraper():
                     
                     try: h1 = p_page.locator('h1').first.inner_text(); title = h1 if h1 else title
                     except: pass
+                    
                     try: website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
                     except: website = ph_link
+
                     try: desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
                     except: desc = title
-                    
+
                     hashtags = "#Tech"
                     try:
                         tag_els = p_page.locator('div[class*="styles_topics"] a').all()
