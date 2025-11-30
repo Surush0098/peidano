@@ -120,7 +120,6 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        # تغییر مهم: جعل هویت مرورگر واقعی
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -135,31 +134,25 @@ def run_scraper():
                 print("End of years reached.", flush=True)
                 break
 
-            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}" # حذف /all برای اطمینان
+            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}" 
             print(f"📄 Opening Monthly List: {url}", flush=True)
             
             try:
                 page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 
-                # تلاش برای پیدا کردن لیست با سلکتورهای منعطف‌تر
                 try:
-                    # صبر میکنیم تا هر چیزی که شبیه آیتم لیسته لود بشه
                     page.wait_for_selector('div[class*="styles_item"]', timeout=20000)
                 except:
                     print("⚠️ Timeout waiting for list. Trying to extract anyway...", flush=True)
 
-                # اسکرول
                 for _ in range(3):
                     page.mouse.wheel(0, 1000)
                     time.sleep(1)
 
-                # پیدا کردن آیتم‌ها با سلکتور کلی‌تر
                 items = page.locator('div[class*="styles_item"]').all()
                 
-                # اگر آیتم پیدا نشد، شاید ساختار فرق کرده، یک تلاش دیگه با لینک‌ها
                 if not items:
                     print("⚠️ Standard selector failed. Trying fallback...", flush=True)
-                    # پیدا کردن لینک‌هایی که به /posts/ میرن و داخلشون عکس هست
                     items = page.locator('a[href*="/posts/"]').all()
 
                 items = items[:TOP_N_MONTHLY]
@@ -184,14 +177,12 @@ def run_scraper():
                 item = items[current_idx]
                 
                 try:
-                    # استخراج لینک و تگ (با هندل کردن ارورهای احتمالی)
-                    # اگر آیتم خودِ لینک باشه (در روش فال‌بک) یا کانتینر باشه
-                    if await item.get_attribute("href"):
+                    # تغییر اصلی اینجاست: حذف await
+                    if item.get_attribute("href"):
                          ph_link = "https://www.producthunt.com" + item.get_attribute("href")
-                         title = item.inner_text().split('\n')[0] # حدس زدن تیتر
+                         title = item.inner_text().split('\n')[0] 
                          hashtags = "#Tech"
                     else:
-                        # روش استاندارد
                         title_el = item.locator('a[class*="styles_title"]').first
                         title = title_el.inner_text()
                         ph_link = "https://www.producthunt.com" + title_el.get_attribute("href")
@@ -264,7 +255,6 @@ def run_scraper():
             except Exception as e:
                 print(f"❌ Error loading monthly page: {e}", flush=True)
                 time.sleep(10)
-                # اگر ارور کلی بود، احتمالا بلوک شدیم، خارج شو تا دفعه بعد
                 break 
 
 if __name__ == "__main__":
