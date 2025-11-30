@@ -28,8 +28,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
-                content = f.read().strip()
-                return json.loads(content) if content else {"year": START_YEAR, "month": 1, "product_idx": 0, "status": "MONTHLY"}
+                return json.load(f)
         except: pass
     return {"year": START_YEAR, "month": 1, "product_idx": 0, "status": "MONTHLY"}
 
@@ -45,28 +44,29 @@ def save_state(state):
     except: pass
 
 def generate_content(product_name, original_desc, maker_comment, launch_date):
-    print(f"   Generating AI content...", flush=True)
-    combined_text = f"Main Description: {original_desc}\n\nMaker's Comment: {maker_comment}"
+    print(f"   Generating AI content for {product_name}...", flush=True)
+    combined_text = f"Product: {product_name}\nDescription: {original_desc}\nMaker Comment: {maker_comment}"
 
     prompt_pitch = f"""
-    اطلاعات محصول: {combined_text}
+    اطلاعات محصول:
+    {combined_text}
+    
     وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
     قوانین:
-    1. منبع: به متن "Maker's Comment" اولویت بده.
-    2. لحن: سوم شخص (دانای کل).
-    3. محتوا: چیست؟ چه مشکلی را حل می‌کند؟ چه ویژگی‌هایی دارد؟
-    4. طول: 5 تا 15 خط.
+    1. لحن راوی: سوم شخص (دانای کل).
+    2. محتوا: چیست؟ چه مشکلی را حل می‌کند؟
+    3. اگر متن ورودی ناقص است، بر اساس نام محصول و توضیحات کوتاه، حدس بزن کارش چیست (اما دروغ نگو).
+    4. طول: 5 تا 10 خط.
     5. زبان: فارسی روان.
     """
     try:
         pitch_res = model.generate_content(prompt_pitch).text.strip()
         time.sleep(2)
-    except:
-        pitch_res = "توضیحات در دسترس نیست."
+    except: pitch_res = "توضیحات در دسترس نیست."
 
     prompt_history = f"""
     محصول: {product_name} ({launch_date})
-    توضیحات: {original_desc[:200]}...
+    توضیحات: {original_desc[:300]}...
     وظیفه: تحلیل کوتاه (3 تا 5 خط) وضعیت فعلی.
     1. با سرچ یا دانش خودت: الان کجاست؟ (فعال/شکست‌خورده/فروخته شده)
     2. مدل درآمدی؟
@@ -75,9 +75,7 @@ def generate_content(product_name, original_desc, maker_comment, launch_date):
     try:
         history_res = model.generate_content(prompt_history).text.strip()
         time.sleep(2)
-    except:
-        history_res = "جمنای: اطلاعات تاریخی دقیقی یافت نشد."
-        
+    except: history_res = "جمنای: اطلاعات تاریخی یافت نشد."
     return pitch_res, history_res
 
 def send_to_telegram(data):
@@ -123,12 +121,9 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
-        page = context.new_page()
+        # مرورگر برای گرفتن سورس HTML
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page()
 
         while state['month'] == current_run_month:
             year = state['year']
@@ -136,54 +131,57 @@ def run_scraper():
             if year >= END_YEAR: break
 
             url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
-            print(f"📄 Opening: {url}", flush=True)
+            print(f"📄 Opening List: {url}", flush=True)
             
             try:
-                page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                time.sleep(5) # کمی صبر برای لود اولیه
-
-                # --- استخراج با BeautifulSoup (روش جدید) ---
-                html_content = page.content()
-                soup = BeautifulSoup(html_content, 'html.parser')
+                page.goto(url, timeout=60000, wait_until="commit") # فقط صبر برای اتصال اولیه
+                time.sleep(5) # کمی صبر برای رندر اولیه
                 
-                # پیدا کردن آیتم‌ها بر اساس data-test (دقیق مثل فایل شما)
-                # این سلکتور یعنی: هر تگی که خاصیت data-test دارد و مقدارش با post-item- شروع می‌شود
+                # دریافت HTML کامل لیست
+                list_html = page.content()
+                soup = BeautifulSoup(list_html, 'html.parser')
+
+                # پیدا کردن آیتم‌ها (روش data-test که در فایل شما بود)
                 items = soup.select('[data-test^="post-item-"]')
                 
-                # اگر پیدا نکرد، فال‌بک به لینک‌ها
+                # فال‌بک به لینک‌ها اگر data-test نبود
                 if not items:
-                    print("⚠️ data-test not found via BS4. Trying fallback links...", flush=True)
-                    # ساختار دستی لینک‌ها
+                    print("⚠️ data-test not found. Fallback to links.", flush=True)
                     links = soup.find_all('a', href=True)
-                    temp_items = []
+                    valid_items = []
                     seen = set()
                     for link in links:
                         href = link['href']
                         if ("/posts/" in href or "/products/" in href) and "#" not in href:
                             full = "https://www.producthunt.com" + href if href.startswith("/") else href
                             if full not in seen:
-                                temp_items.append({"url": full, "bs4_element": link})
+                                valid_items.append({"url": full, "element": link})
                                 seen.add(full)
-                    items = temp_items
+                    items = valid_items
                 else:
-                    # تبدیل آیتم‌های data-test به فرمت قابل استفاده
-                    valid_items = []
+                    # تبدیل data-test ها به فرمت استاندارد
+                    parsed_items = []
                     for item in items:
-                        # پیدا کردن لینک داخل آیتم
                         link_tag = item.find('a', href=True)
                         if link_tag:
                             href = link_tag['href']
                             full = "https://www.producthunt.com" + href if href.startswith("/") else href
-                            valid_items.append({"url": full, "bs4_element": item})
-                    items = valid_items
+                            parsed_items.append({"url": full, "element": item})
+                    items = parsed_items
 
                 items = items[:TOP_N_MONTHLY]
-                print(f"   Found {len(items)} products via HTML Parsing.", flush=True)
+                print(f"   Found {len(items)} products.", flush=True)
                 
                 if not items:
-                    print("❌ No items found even in raw HTML. Blocking likely active.", flush=True)
+                    print("❌ No items found. Skipping month.", flush=True)
+                    state['month'] += 1
+                    if state['month'] > 12:
+                        state['month'] = 1
+                        state['year'] += 1
+                    save_state(state)
                     break
 
+                # --- پردازش محصول تکی ---
                 current_idx = state['product_idx']
                 if current_idx >= len(items):
                     print("   Month finished! Next.", flush=True)
@@ -198,81 +196,88 @@ def run_scraper():
                 item_data = items[current_idx]
                 ph_link = item_data['url']
                 
-                # استخراج عنوان از BS4
-                try:
-                    if 'bs4_element' in item_data:
-                         title = item_data['bs4_element'].get_text(strip=True).split('\n')[0]
-                    else: title = "Product"
-                except: title = "Product"
+                # تمیز کردن تیتر از لیست
+                raw_title = item_data['element'].get_text(separator=" ", strip=True)
+                # معمولا تیتر بخش اول متنه
+                title = raw_title.split("  ")[0] if "  " in raw_title else raw_title[:30] 
 
-                print(f"🔍 Processing: {title}", flush=True)
+                print(f"🔍 Processing: {title} ({ph_link})", flush=True)
 
-                # برای جزئیات محصول، دوباره از مرورگر استفاده می‌کنیم (برای عکس‌ها)
-                p_page = context.new_page()
-                try:
-                    p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
-                    time.sleep(3)
-                    
-                    try: h1 = p_page.locator('h1').first.inner_text(); title = h1 if h1 else title
-                    except: pass
-                    
-                    try: website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
-                    except: website = ph_link
+                # --- باز کردن صفحه جزئیات (فقط برای گرفتن HTML) ---
+                page.goto(ph_link, timeout=60000, wait_until="commit")
+                time.sleep(4)
+                detail_html = page.content()
+                detail_soup = BeautifulSoup(detail_html, 'html.parser')
 
-                    try: desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
-                    except: desc = title
+                # 1. استخراج تیتر دقیق (h1)
+                h1 = detail_soup.find('h1')
+                if h1: title = h1.get_text(strip=True)
 
-                    hashtags = "#Tech"
-                    try:
-                        tag_els = p_page.locator('div[class*="styles_topics"] a').all()
-                        if tag_els:
-                            tags = [t.inner_text() for t in tag_els]
-                            hashtags = " ".join([f"#{t.replace(' ', '')}" for t in tags])
-                    except: pass
+                # 2. استخراج وبسایت
+                website = ph_link
+                visit_btn = detail_soup.find('a', attrs={'data-test': 'visit-button'})
+                if visit_btn: website = visit_btn.get('href')
 
-                    maker_comment = ""
-                    try:
-                        comment_el = p_page.locator('div[class*="styles_commentBody"]').first
-                        if comment_el.is_visible(): maker_comment = comment_el.inner_text()
-                    except: pass
+                # 3. استخراج توضیحات
+                desc = title
+                # تلاش برای پیدا کردن متای توضیحات
+                meta_desc = detail_soup.find('meta', attrs={'name': 'description'})
+                if meta_desc: 
+                    desc = meta_desc.get('content')
+                else:
+                    # تلاش برای پیدا کردن متن بدنه
+                    desc_div = detail_soup.find('div', class_=lambda x: x and 'description' in x)
+                    if desc_div: desc = desc_div.get_text(strip=True)
 
-                    images = []
-                    try:
-                        img_els = p_page.locator('img[class*="styles_mediaImage"]').all()
-                        for img in img_els:
-                            src = img.get_attribute("src")
-                            if src and "http" in src: images.append(src)
-                        images = list(set(images))
-                    except: pass
-                    
-                    p_page.close()
+                # 4. استخراج کامنت سازنده
+                maker_comment = ""
+                comment_div = detail_soup.find('div', class_=lambda x: x and 'commentBody' in x)
+                if comment_div: maker_comment = comment_div.get_text(strip=True)
 
-                    date_str = f"{MONTHS[month]} {year}"
-                    pitch_text, history_text = generate_content(title, desc, maker_comment, date_str)
-                    
-                    post_data = {
-                        "title": title, "date_str": date_str, "hashtags": hashtags,
-                        "pitch_text": pitch_text, "history_text": history_text,
-                        "ph_link": ph_link, "website": website, "images": images
-                    }
-                    
-                    send_to_telegram(post_data)
-                    print(f"✅ Sent.", flush=True)
-                    
-                    state['product_idx'] += 1
-                    save_state(state)
-                    time.sleep(5)
+                # 5. استخراج عکس‌ها
+                images = []
+                # همه عکس‌های صفحه که سورس معتبر دارند
+                img_tags = detail_soup.find_all('img')
+                for img in img_tags:
+                    src = img.get('src') or img.get('srcset')
+                    if src and "http" in src and "avatar" not in src and "logo" not in src:
+                        # فیلتر کردن عکس‌های خیلی کوچک (آیکون‌ها)
+                        if "width" in img.attrs and int(img['width']) > 100:
+                             images.append(src.split(' ')[0]) # هندل کردن srcset
+                        elif "media" in str(img.parent): # عکس‌های داخل گالری معمولا توی مدیا هستن
+                             images.append(src.split(' ')[0])
+                
+                # حذف تکراری
+                images = list(set(images))
+                if not images: # اگر عکسی پیدا نشد، عکس اوجی (OG Image) رو بگیر
+                    og_img = detail_soup.find('meta', property='og:image')
+                    if og_img: images.append(og_img['content'])
 
-                except Exception as e:
-                    print(f"❌ Failed product page: {e}", flush=True)
-                    p_page.close()
-                    state['product_idx'] += 1
-                    save_state(state)
+                hashtags = "#Tech" # تگ پیشفرض
+                
+                # تولید و ارسال
+                date_str = f"{MONTHS[month]} {year}"
+                pitch_text, history_text = generate_content(title, desc, maker_comment, date_str)
+                
+                post_data = {
+                    "title": title, "date_str": date_str, "hashtags": hashtags,
+                    "pitch_text": pitch_text, "history_text": history_text,
+                    "ph_link": ph_link, "website": website, "images": images
+                }
+                
+                send_to_telegram(post_data)
+                print(f"✅ Sent.", flush=True)
+                
+                state['product_idx'] += 1
+                save_state(state)
+                time.sleep(5)
 
             except Exception as e:
-                print(f"❌ Error loading monthly page: {e}", flush=True)
-                time.sleep(10)
-                break 
+                print(f"❌ Error processing item: {e}", flush=True)
+                # رد کردن آیتم خراب برای جلوگیری از گیر کردن
+                state['product_idx'] += 1
+                save_state(state)
+                time.sleep(5)
 
 if __name__ == "__main__":
     run_scraper()
