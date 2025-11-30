@@ -4,6 +4,7 @@ import time
 import requests
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
@@ -117,55 +118,70 @@ def run_scraper():
     state = load_state()
     current_run_month = state['month']
     
-    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
+    print(f"🚀 Starting scraper (Stealth Mode). Target: {state['year']}/{state['month']}", flush=True)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'])
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
         )
+        
         page = context.new_page()
+        stealth_sync(page) # فعال سازی حالت نامرئی
 
         while state['month'] == current_run_month:
             year = state['year']
             month = state['month']
             
             if year >= END_YEAR:
-                print("End of years reached.", flush=True)
                 break
 
-            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}" 
-            print(f"📄 Opening Monthly List: {url}", flush=True)
+            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
+            print(f"📄 Opening: {url}", flush=True)
             
             try:
-                page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                page.goto(url, timeout=90000, wait_until="domcontentloaded")
+                time.sleep(5) # صبر اولیه
                 
-                try:
-                    page.wait_for_selector('div[class*="styles_item"]', timeout=20000)
-                except:
-                    print("⚠️ Timeout waiting for list. Trying to extract anyway...", flush=True)
+                # چاپ عنوان صفحه برای دیباگ (ببینیم بلاک شدیم یا نه)
+                print(f"   Page Title: {page.title()}", flush=True)
 
-                for _ in range(3):
-                    page.mouse.wheel(0, 1000)
+                # اسکرول سنگین برای لود شدن
+                for _ in range(5):
+                    page.mouse.wheel(0, 1500)
                     time.sleep(1)
 
-                items = page.locator('div[class*="styles_item"]').all()
+                # تلاش برای پیدا کردن لینک محصولات با روشی متفاوت (CSS Selector)
+                # دنبال لینک‌هایی می‌گردیم که در آدرسشون /posts/ باشه و کلاس تایتل نداشته باشه (جلوگیری از تکرار)
+                product_links = page.locator('div[class*="styles_item"] a[href^="/posts/"]').all()
                 
-                if not items:
-                    print("⚠️ Standard selector failed. Trying fallback...", flush=True)
-                    items = page.locator('a[href*="/posts/"]').all()
+                # فیلتر کردن لینک‌های تکراری و به درد نخور
+                unique_links = []
+                seen_urls = set()
+                
+                for link in product_links:
+                    try:
+                        href = link.get_attribute("href")
+                        # فقط لینک‌های تمیز محصول
+                        if href and "/posts/" in href and "#" not in href and "reviews" not in href:
+                            full_url = "https://www.producthunt.com" + href
+                            if full_url not in seen_urls:
+                                unique_links.append({"url": full_url, "element": link})
+                                seen_urls.add(full_url)
+                    except: pass
 
-                items = items[:TOP_N_MONTHLY]
-                print(f"   Found {len(items)} items.", flush=True)
+                items = unique_links[:TOP_N_MONTHLY]
+                print(f"   Found {len(items)} products.", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Possible Block or Layout Change.", flush=True)
+                    print("❌ No items found. Check Page Title above.", flush=True)
                     break
 
                 current_idx = state['product_idx']
                 
                 if current_idx >= len(items):
-                    print("   Month finished! Moving to next.", flush=True)
+                    print("   Month finished! Next.", flush=True)
                     state['month'] += 1
                     state['product_idx'] = 0
                     if state['month'] > 12:
@@ -174,35 +190,31 @@ def run_scraper():
                     save_state(state)
                     break
 
-                item = items[current_idx]
+                # پردازش محصول
+                item_data = items[current_idx]
+                ph_link = item_data['url']
+                
+                # تلاش برای گرفتن اسم از لیست (اگر نشد از صفحه محصول می‌گیریم)
+                try:
+                    title = item_data['element'].inner_text().split('\n')[0]
+                except: title = "Unknown Product"
+
+                print(f"🔍 Processing: {ph_link}", flush=True)
+
+                # باز کردن صفحه محصول
+                p_page = context.new_page()
+                stealth_sync(p_page)
                 
                 try:
-                    # تغییر اصلی اینجاست: حذف await
-                    if item.get_attribute("href"):
-                         ph_link = "https://www.producthunt.com" + item.get_attribute("href")
-                         title = item.inner_text().split('\n')[0] 
-                         hashtags = "#Tech"
-                    else:
-                        title_el = item.locator('a[class*="styles_title"]').first
-                        title = title_el.inner_text()
-                        ph_link = "https://www.producthunt.com" + title_el.get_attribute("href")
-                        
-                        tag_els = item.locator('a[class*="styles_topic"]').all()
-                        tags = [t.inner_text() for t in tag_els]
-                        hashtags = " ".join([f"#{t.replace(' ', '')}" for t in tags])
-                    
-                    print(f"🔍 Processing Product: {title}", flush=True)
-                    
-                except:
-                    print("   Error reading list item info, trying next...", flush=True)
-                    state['product_idx'] += 1
-                    continue
-
-                p_page = context.new_page()
-                try:
                     p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
-                    time.sleep(2)
+                    time.sleep(3)
                     
+                    # استخراج اطلاعات دقیق
+                    try:
+                        # گرفتن تایتل دقیق از صفحه محصول
+                        title = p_page.locator('h1').first.inner_text()
+                    except: pass
+
                     try:
                         website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
                     except: website = ph_link
@@ -210,6 +222,15 @@ def run_scraper():
                     try:
                         desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
                     except: desc = title
+
+                    # استخراج تگ‌ها از صفحه محصول
+                    hashtags = "#Tech"
+                    try:
+                        tag_els = p_page.locator('div[class*="styles_topics"] a').all()
+                        if tag_els:
+                            tags = [t.inner_text() for t in tag_els]
+                            hashtags = " ".join([f"#{t.replace(' ', '')}" for t in tags])
+                    except: pass
 
                     maker_comment = ""
                     try:
@@ -240,7 +261,7 @@ def run_scraper():
                     }
                     
                     send_to_telegram(post_data)
-                    print(f"✅ Sent successfully.", flush=True)
+                    print(f"✅ Sent.", flush=True)
                     
                     state['product_idx'] += 1
                     save_state(state)
