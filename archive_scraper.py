@@ -120,16 +120,12 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
+        # تغییر: استفاده از User-Agent لینوکسی واقعی (چون سرور گیت‌هاب لینوکس است)
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
-        
-        # اضافه کردن هدرهای واقعی برای فریب کلودفلر
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            }
+            device_scale_factor=1,
         )
         page = context.new_page()
 
@@ -145,26 +141,33 @@ def run_scraper():
             print(f"📄 Opening: {url}", flush=True)
             
             try:
-                page.goto(url, timeout=90000, wait_until="domcontentloaded")
+                # تلاش اول برای باز کردن صفحه
+                page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 
-                # --- حل چالش Cloudflare ---
-                print("   Checking for Cloudflare...", flush=True)
-                for _ in range(10): # 20 ثانیه تلاش برای حل چالش
-                    title = page.title()
-                    if "Just a moment" not in title and "Cloudflare" not in title:
-                        break
-                    # تکان دادن موس برای اثبات انسان بودن
-                    page.mouse.move(random.randint(100, 500), random.randint(100, 500))
-                    time.sleep(2)
-                
-                print(f"   Page Title: {page.title()}", flush=True)
+                # کلیک تصادفی برای فعال‌سازی صفحه
+                try:
+                    page.mouse.click(100, 100)
+                except: pass
 
-                for _ in range(5):
-                    page.mouse.wheel(0, 3000)
-                    time.sleep(1)
+                # اسکرول اولیه
+                page.mouse.wheel(0, 1000)
+                time.sleep(3)
 
+                # چک کردن لینک‌ها
                 all_links = page.locator('a[href*="/posts/"]').all()
-                print(f"   Raw links found: {len(all_links)}", flush=True)
+                
+                # --- تکنیک ریلود: اگر لینک‌ها کم بود، رفرش کن ---
+                if len(all_links) < 5:
+                    print("⚠️ List appears empty (Bot blocked?). Trying RELOAD...", flush=True)
+                    page.reload(wait_until="domcontentloaded")
+                    time.sleep(5)
+                    # اسکرول مجدد بعد از ریلود
+                    for _ in range(5):
+                        page.mouse.wheel(0, 2000)
+                        time.sleep(1)
+                    all_links = page.locator('a[href*="/posts/"]').all()
+
+                print(f"   Raw product links found: {len(all_links)}", flush=True)
                 
                 unique_products = []
                 seen_urls = set()
@@ -173,7 +176,6 @@ def run_scraper():
                     try:
                         href = link.get_attribute("href")
                         if not href: continue
-                        
                         if ("/posts/" in href or "/products/" in href) and "#" not in href and "/reviews" not in href:
                             full_url = "https://www.producthunt.com" + href
                             if full_url not in seen_urls:
@@ -187,9 +189,12 @@ def run_scraper():
                 print(f"   Filtered Products: {len(items)}", flush=True)
                 
                 if not items:
-                    print("❌ No items found (Cloudflare might still be blocking).", flush=True)
-                    # اگر باز هم نشد، پرینت کن ببینیم چی می‌بینه
-                    print(page.content()[:300])
+                    print("❌ No items found. Skipping month to prevent loop.", flush=True)
+                    state['month'] += 1 # اجبار به رفتن به ماه بعد
+                    if state['month'] > 12:
+                        state['month'] = 1
+                        state['year'] += 1
+                    save_state(state)
                     break
 
                 current_idx = state['product_idx']
