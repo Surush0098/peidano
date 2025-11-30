@@ -33,54 +33,52 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
     
-    os.system('git config --global user.email "bot@github.com"')
-    os.system('git config --global user.name "Archive Bot"')
-    os.system(f'git add {STATE_FILE}')
-    os.system(f'git commit -m "Update state"')
-    os.system('git push')
+    try:
+        os.system('git config --global user.email "bot@github.com"')
+        os.system('git config --global user.name "Archive Bot"')
+        os.system(f'git add {STATE_FILE}')
+        os.system(f'git commit -m "Update state"')
+        os.system('git push')
+    except: pass
 
 def generate_content(product_name, original_desc, maker_comment, launch_date):
-    combined_text = f"Main Description: {original_desc}\n\nMaker's Comment (Story behind product): {maker_comment}"
+    print(f"   Generating AI content for {product_name}...", flush=True)
+    combined_text = f"Main Description: {original_desc}\n\nMaker's Comment: {maker_comment}"
 
     prompt_pitch = f"""
-    اطلاعات محصول:
-    {combined_text}
-    
+    اطلاعات محصول: {combined_text}
     وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
-    
-    قوانین مهم:
-    1. **منبع:** برای درک "هدف و داستان" محصول، به متن "Maker's Comment" اولویت بده. توضیحات فنی را از "Main Description" بگیر.
-    2. **لحن:** سوم شخص (دانای کل). اصلاً از زبان سازنده (من ساختم...) ننویس.
-    3. **محتوا:** دقیقاً بگو چیست؟ چه دردی را دوا می‌کند؟ و چه ویژگی خاصی دارد؟
-    4. **طول:** 5 تا 15 خط.
-    5. **زبان:** فارسی روان و جذاب.
+    قوانین:
+    1. منبع: به متن "Maker's Comment" اولویت بده.
+    2. لحن راوی: سوم شخص (دانای کل).
+    3. محتوا: چیست؟ چه مشکلی را حل می‌کند؟ چه ویژگی‌هایی دارد؟
+    4. طول: 5 تا 15 خط.
+    5. زبان: فارسی روان.
     """
     try:
         pitch_res = model.generate_content(prompt_pitch).text.strip()
-        time.sleep(5)
+        time.sleep(2)
     except:
         pitch_res = "توضیحات در دسترس نیست."
 
     prompt_history = f"""
-    محصول: {product_name}
-    تاریخ عرضه: {launch_date}
+    محصول: {product_name} ({launch_date})
     توضیحات: {original_desc[:200]}...
-
-    وظیفه: تحلیل کوتاه (1 تا 9 خط) درباره وضعیت فعلی محصول.
-    1. با استفاده از ابزار جستجو (Search) یا دانش خودت: الان این محصول کجاست؟ (فعال، شکست‌خورده، یا فروخته شده؟)
-    2. مدل درآمدی‌اش چیست؟
-    3. تکرار نکن! اطلاعاتی که در بخش معرفی گفتی را اینجا نگو. فقط اطلاعات جدید (تاریخچه/بیزنس).
-    4. شروع جمله با: "جمنای: ..."
+    وظیفه: تحلیل کوتاه (3 تا 5 خط) وضعیت فعلی.
+    1. با سرچ یا دانش خودت: الان کجاست؟ (فعال/شکست‌خورده/فروخته شده)
+    2. مدل درآمدی؟
+    3. شروع با: "جمنای: ..."
     """
     try:
         history_res = model.generate_content(prompt_history).text.strip()
-        time.sleep(5)
+        time.sleep(2)
     except:
         history_res = "جمنای: اطلاعات تاریخی دقیقی یافت نشد."
         
     return pitch_res, history_res
 
 def send_to_telegram(data):
+    print(f"   Sending to Telegram...", flush=True)
     caption = f"""
 🗓️ {data['date_str']}
 
@@ -119,8 +117,11 @@ def run_scraper():
     state = load_state()
     current_run_month = state['month']
     
+    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # تغییر مهم: اضافه کردن آرگومان no-sandbox برای جلوگیری از کرش در سرور
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         page = browser.new_page()
 
         while state['month'] == current_run_month:
@@ -128,24 +129,29 @@ def run_scraper():
             month = state['month']
             
             if year >= END_YEAR:
+                print("End of years reached.", flush=True)
                 break
 
-            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
+            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}/all"
+            print(f"📄 Opening Monthly List: {url}", flush=True)
             
             try:
                 page.goto(url, timeout=60000)
-                page.wait_for_selector('div[class*="styles_item__"]', timeout=10000)
+                page.wait_for_selector('div[class*="styles_item__"]', timeout=20000)
                 
+                # اسکرول
                 for _ in range(5):
                     page.mouse.wheel(0, 1000)
                     time.sleep(1)
 
                 items = page.locator('div[class*="styles_item__"]').all()
                 items = items[:TOP_N_MONTHLY]
+                print(f"   Found {len(items)} items.", flush=True)
                 
                 current_idx = state['product_idx']
                 
                 if current_idx >= len(items):
+                    print("   Month finished! Moving to next.", flush=True)
                     state['month'] += 1
                     state['product_idx'] = 0
                     if state['month'] > 12:
@@ -165,7 +171,10 @@ def run_scraper():
                     tags = [t.inner_text() for t in tag_els]
                     hashtags = " ".join([f"#{t.replace(' ', '')}" for t in tags])
                     
+                    print(f"🔍 Processing Product: {title}", flush=True)
+                    
                 except:
+                    print("   Error reading list item, skipping.", flush=True)
                     state['product_idx'] += 1
                     continue
 
@@ -176,17 +185,14 @@ def run_scraper():
                     
                     try:
                         website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
-                    except:
-                        website = ph_link
+                    except: website = ph_link
 
                     try:
                         desc = p_page.locator('div[class*="styles_description__"]').first.inner_text()
-                    except:
-                        desc = title
+                    except: desc = title
 
                     maker_comment = ""
                     try:
-                        # تلاش برای پیدا کردن اولین کامنت (که معمولا مال سازنده است)
                         comment_el = p_page.locator('div[class*="styles_commentBody__"]').first
                         if comment_el.is_visible():
                             maker_comment = comment_el.inner_text()
@@ -208,29 +214,26 @@ def run_scraper():
                     pitch_text, history_text = generate_content(title, desc, maker_comment, date_str)
                     
                     post_data = {
-                        "title": title,
-                        "date_str": date_str,
-                        "hashtags": hashtags,
-                        "pitch_text": pitch_text,
-                        "history_text": history_text,
-                        "ph_link": ph_link,
-                        "website": website,
-                        "images": images
+                        "title": title, "date_str": date_str, "hashtags": hashtags,
+                        "pitch_text": pitch_text, "history_text": history_text,
+                        "ph_link": ph_link, "website": website, "images": images
                     }
                     
                     send_to_telegram(post_data)
+                    print(f"✅ Sent successfully.", flush=True)
                     
                     state['product_idx'] += 1
                     save_state(state)
-                    
                     time.sleep(5)
 
-                except:
+                except Exception as e:
+                    print(f"❌ Failed product page: {e}", flush=True)
                     p_page.close()
                     state['product_idx'] += 1
                     save_state(state)
 
-            except:
+            except Exception as e:
+                print(f"❌ Error loading monthly page: {e}", flush=True)
                 time.sleep(10)
 
 if __name__ == "__main__":
