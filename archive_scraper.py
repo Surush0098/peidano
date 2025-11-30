@@ -123,14 +123,11 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']}", flush=True)
 
     with sync_playwright() as p:
-        # تغییر استراتژی: شبیه‌سازی موبایل (iPhone 13)
-        iphone = p.devices['iPhone 13']
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
-        context = browser.new_context(**iphone)
-        
-        # تزریق اسکریپت برای مخفی کردن کامل webdriver
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            viewport={"width": 390, "height": 844}
+        )
         page = context.new_page()
 
         while state['month'] == current_run_month:
@@ -146,55 +143,57 @@ def run_scraper():
             
             try:
                 page.goto(url, timeout=90000, wait_until="domcontentloaded")
-                
-                # صبر هوشمند برای لود شدن لیست
-                try:
-                    page.wait_for_selector('a[href*="/posts/"]', timeout=20000)
-                except:
-                    print("⚠️ Timeout waiting for posts. Checking page content...", flush=True)
-
-                time.sleep(3)
+                time.sleep(5)
                 print(f"   Page Title: {page.title()}", flush=True)
 
-                # اسکرول
                 for _ in range(5):
                     page.mouse.wheel(0, 3000)
                     time.sleep(1)
 
-                all_links = page.locator('a[href*="/posts/"]').all()
-                print(f"   Raw links found: {len(all_links)}", flush=True)
+                # --- استراتژی تورِ بزرگ (Broad Sweep) ---
+                # گرفتن همه لینک‌ها
+                all_links = page.locator('a').all()
+                print(f"   Total links found: {len(all_links)}", flush=True)
 
                 unique_products = []
                 seen_urls = set()
+                
+                # لیست سیاه لینک‌های منو و ناوبری
+                banned_words = ["subscribe", "sign in", "login", "newsletter", "twitter", "facebook", 
+                                "instagram", "linkedin", "about", "branding", "jobs", "leaderboard", 
+                                "topics", "discussions", "stories", "alternatives", "search"]
 
                 for link in all_links:
                     try:
                         href = link.get_attribute("href")
-                        if not href: continue
-                        if ("/posts/" in href or "/products/" in href) and "#" not in href:
+                        text = link.inner_text().strip()
+                        
+                        if not href or not text: continue
+                        
+                        href_lower = href.lower()
+                        # فیلتر کردن لینک‌های نامربوط
+                        if any(banned in href_lower for banned in banned_words): continue
+                        if len(text) < 2 or len(text) > 50: continue # تیتر محصول معمولا بین 2 تا 50 حرفه
+                        if href.startswith("/@"): continue # پروفایل کاربرها
+                        
+                        # لینک محصول باید داخلی باشه (با / شروع شه) و شامل موارد بالا نباشه
+                        if href.startswith("/") and not href.startswith("//"):
                             full_url = "https://www.producthunt.com" + href
+                            
                             if full_url not in seen_urls:
-                                text = link.inner_text().strip()
-                                # در حالت موبایل ممکنه متن لینک خالی باشه (فقط عکس)، پس لینک رو قبول میکنیم
-                                unique_products.append({"url": full_url, "element": link, "title": text})
+                                unique_products.append({"url": full_url, "title": text})
                                 seen_urls.add(full_url)
+                                # چاپ لینک برای دیباگ (که ببینیم چی پیدا کرده)
+                                # print(f"Found candidate: {text} -> {full_url}") 
                     except: pass
 
+                # فیلتر نهایی: فقط 25 تای اول که شبیه محصول هستن رو برمیداریم
+                # معمولا محصولات بعد از لینک های هدر میان
                 items = unique_products[:TOP_N_MONTHLY]
-                print(f"   Filtered Products: {len(items)}", flush=True)
+                print(f"   Filtered Candidates: {len(items)}", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Dumping HTML body for debug:", flush=True)
-                    try:
-                        body_text = page.locator('body').inner_text()
-                        print(body_text[:1000]) # چاپ 1000 حرف اول برای فهمیدن مشکل
-                    except: pass
-                    
-                    state['month'] += 1 # پرش اجباری برای گیر نکردن
-                    if state['month'] > 12:
-                        state['month'] = 1
-                        state['year'] += 1
-                    save_state(state)
+                    print("❌ No items found. Page structure might be very different.", flush=True)
                     break
 
                 current_idx = state['product_idx']
@@ -210,10 +209,9 @@ def run_scraper():
 
                 item_data = items[current_idx]
                 ph_link = item_data['url']
-                # اگر تایتل خالی بود (چون موبایله)، موقتا Unknown میذاریم تا تو صفحه خودش دقیقشو بگیریم
-                title = item_data['title'].split('\n')[0] if item_data['title'] else "Unknown"
+                title = item_data['title']
 
-                print(f"🔍 Processing: {ph_link}", flush=True)
+                print(f"🔍 Processing: {title}", flush=True)
 
                 p_page = context.new_page()
                 try:
