@@ -1,15 +1,15 @@
 name: Run Archive Scraper
 
 on:
-  workflow_dispatch: # فقط دستی اجرا میشه (برای کنترل بهتر)
+  workflow_dispatch:
 
 permissions:
-  contents: write # مجوز نوشتن برای ذخیره فایل state.json
+  contents: write
 
 jobs:
   scrape_archive:
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # حداکثر 1 ساعت اجرا
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install chromium # نصب مرورگر کروم برای ربات
+          playwright install chromium
 
       - name: Run Scraper
         env:
