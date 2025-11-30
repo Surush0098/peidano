@@ -1,4 +1,4 @@
 requests
-feedparser
 google-generativeai
+playwright
 beautifulsoup4
