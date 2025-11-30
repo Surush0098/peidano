@@ -42,15 +42,14 @@ def save_state(state):
     except: pass
 
 def generate_content(product_name, original_desc, maker_comment, launch_date):
-    print(f"   Generating AI content...", flush=True)
     combined_text = f"Main Description: {original_desc}\n\nMaker's Comment: {maker_comment}"
-
+    
     prompt_pitch = f"""
     اطلاعات محصول: {combined_text}
-    وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
+    وظیفه: تو سردبیر ارشد کانال Peidano هستی.
     قوانین:
     1. منبع: به متن "Maker's Comment" اولویت بده.
-    2. لحن راوی: سوم شخص (دانای کل).
+    2. لحن: سوم شخص (دانای کل).
     3. محتوا: چیست؟ چه مشکلی را حل می‌کند؟ چه ویژگی‌هایی دارد؟
     4. طول: 5 تا 15 خط.
     5. زبان: فارسی روان.
@@ -58,27 +57,23 @@ def generate_content(product_name, original_desc, maker_comment, launch_date):
     try:
         pitch_res = model.generate_content(prompt_pitch).text.strip()
         time.sleep(2)
-    except:
-        pitch_res = "توضیحات در دسترس نیست."
+    except: pitch_res = "توضیحات در دسترس نیست."
 
     prompt_history = f"""
     محصول: {product_name} ({launch_date})
     توضیحات: {original_desc[:200]}...
     وظیفه: تحلیل کوتاه (3 تا 5 خط) وضعیت فعلی.
-    1. با سرچ یا دانش خودت: الان کجاست؟ (فعال/شکست‌خورده/فروخته شده)
+    1. الان کجاست؟ (فعال/شکست‌خورده/فروخته شده)
     2. مدل درآمدی؟
     3. شروع با: "جمنای: ..."
     """
     try:
         history_res = model.generate_content(prompt_history).text.strip()
         time.sleep(2)
-    except:
-        history_res = "جمنای: اطلاعات تاریخی دقیقی یافت نشد."
-        
+    except: history_res = "جمنای: اطلاعات تاریخی دقیقی یافت نشد."
     return pitch_res, history_res
 
 def send_to_telegram(data):
-    print(f"   Sending to Telegram...", flush=True)
     caption = f"""
 🗓️ {data['date_str']}
 
@@ -97,19 +92,16 @@ def send_to_telegram(data):
 """
     media = []
     images = data['images'][:10]
-    
     if not images:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": CHANNEL_ID, "text": caption, "parse_mode": "Markdown"})
         return
-
     for i, img in enumerate(images):
         media_item = {"type": "photo", "media": img}
         if i == 0:
             media_item["caption"] = caption
             media_item["parse_mode"] = "Markdown"
         media.append(media_item)
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup"
     requests.post(url, json={"chat_id": CHANNEL_ID, "media": media})
 
@@ -117,66 +109,68 @@ def run_scraper():
     state = load_state()
     current_run_month = state['month']
     
-    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
+    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']}", flush=True)
 
     with sync_playwright() as p:
-        # تغییر: استفاده از User-Agent لینوکسی واقعی (چون سرور گیت‌هاب لینوکس است)
+        # تغییر: برگشت به User-Agent ویندوز (اغلب بهتر جواب میده برای سایتهای React)
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            device_scale_factor=1,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
         )
         page = context.new_page()
 
         while state['month'] == current_run_month:
             year = state['year']
             month = state['month']
-            
-            if year >= END_YEAR:
-                print("End of years reached.", flush=True)
-                break
+            if year >= END_YEAR: break
 
             url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
             print(f"📄 Opening: {url}", flush=True)
             
             try:
-                # تلاش اول برای باز کردن صفحه
-                page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 
-                # کلیک تصادفی برای فعال‌سازی صفحه
-                try:
-                    page.mouse.click(100, 100)
-                except: pass
+                # تلاش برای رد کردن چالش
+                print("   Checking layout...", flush=True)
+                time.sleep(5)
+                
+                # اسکرول
+                page.mouse.wheel(0, 3000)
+                time.sleep(2)
 
-                # اسکرول اولیه
-                page.mouse.wheel(0, 1000)
-                time.sleep(3)
-
-                # چک کردن لینک‌ها
+                # استخراج لینک‌ها
                 all_links = page.locator('a[href*="/posts/"]').all()
-                
-                # --- تکنیک ریلود: اگر لینک‌ها کم بود، رفرش کن ---
-                if len(all_links) < 5:
-                    print("⚠️ List appears empty (Bot blocked?). Trying RELOAD...", flush=True)
-                    page.reload(wait_until="domcontentloaded")
-                    time.sleep(5)
-                    # اسکرول مجدد بعد از ریلود
-                    for _ in range(5):
-                        page.mouse.wheel(0, 2000)
-                        time.sleep(1)
-                    all_links = page.locator('a[href*="/posts/"]').all()
+                print(f"   Raw links found: {len(all_links)}", flush=True)
 
-                print(f"   Raw product links found: {len(all_links)}", flush=True)
-                
+                # --- دیاگنوستیک (عیب یابی) ---
+                if len(all_links) == 0:
+                    print("⚠️ Zero products found. Dumping Page Info:", flush=True)
+                    print(f"   Title: {page.title()}", flush=True)
+                    # چاپ 10 لینک اولی که در صفحه هست (شاید لینک‌ها تغییر کردن)
+                    visible_links = page.locator('a').all()[:10]
+                    for i, l in enumerate(visible_links):
+                        try: print(f"   Link {i}: {l.get_attribute('href')}", flush=True)
+                        except: pass
+                    
+                    # تکنیک ریلود هوشمند (رفتن به تب دیگر و بازگشت)
+                    print("🔄 Trying Tab Switch Trick...", flush=True)
+                    try:
+                        # کلیک روی لوگو یا تب دیگر
+                        page.locator('a[href="/"]').first.click(timeout=5000)
+                        time.sleep(3)
+                        page.goto(url, wait_until="networkidle") # بازگشت به ماه
+                        time.sleep(5)
+                        all_links = page.locator('a[href*="/posts/"]').all()
+                        print(f"   Links after refresh: {len(all_links)}", flush=True)
+                    except: pass
+
                 unique_products = []
                 seen_urls = set()
-
                 for link in all_links:
                     try:
                         href = link.get_attribute("href")
-                        if not href: continue
-                        if ("/posts/" in href or "/products/" in href) and "#" not in href and "/reviews" not in href:
+                        if href and "/posts/" in href and "#" not in href and "/reviews" not in href:
                             full_url = "https://www.producthunt.com" + href
                             if full_url not in seen_urls:
                                 text = link.inner_text().strip()
@@ -189,8 +183,8 @@ def run_scraper():
                 print(f"   Filtered Products: {len(items)}", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Skipping month to prevent loop.", flush=True)
-                    state['month'] += 1 # اجبار به رفتن به ماه بعد
+                    print("❌ Final Attempt failed. Skipping month.", flush=True)
+                    state['month'] += 1
                     if state['month'] > 12:
                         state['month'] = 1
                         state['year'] += 1
@@ -198,7 +192,6 @@ def run_scraper():
                     break
 
                 current_idx = state['product_idx']
-                
                 if current_idx >= len(items):
                     print("   Month finished! Next.", flush=True)
                     state['month'] += 1
@@ -220,19 +213,13 @@ def run_scraper():
                     p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
                     time.sleep(3)
                     
-                    try:
-                        h1 = p_page.locator('h1').first.inner_text()
-                        if h1: title = h1
+                    try: h1 = p_page.locator('h1').first.inner_text(); title = h1 if h1 else title
                     except: pass
-
-                    try:
-                        website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
+                    try: website = p_page.locator('a[data-test="visit-button"]').first.get_attribute("href")
                     except: website = ph_link
-
-                    try:
-                        desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
+                    try: desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
                     except: desc = title
-
+                    
                     hashtags = "#Tech"
                     try:
                         tag_els = p_page.locator('div[class*="styles_topics"] a').all()
@@ -244,8 +231,7 @@ def run_scraper():
                     maker_comment = ""
                     try:
                         comment_el = p_page.locator('div[class*="styles_commentBody"]').first
-                        if comment_el.is_visible():
-                            maker_comment = comment_el.inner_text()
+                        if comment_el.is_visible(): maker_comment = comment_el.inner_text()
                     except: pass
 
                     images = []
@@ -253,8 +239,7 @@ def run_scraper():
                         img_els = p_page.locator('img[class*="styles_mediaImage"]').all()
                         for img in img_els:
                             src = img.get_attribute("src")
-                            if src and "http" in src:
-                                images.append(src)
+                            if src and "http" in src: images.append(src)
                         images = list(set(images))
                     except: pass
                     
