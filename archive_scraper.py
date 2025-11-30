@@ -13,11 +13,10 @@ YOUR_CHANNEL_USERNAME = "peidano"
 START_YEAR = 2015
 END_YEAR = 2025
 TOP_N_MONTHLY = 25
-MAX_POSTS_PER_RUN = 30
 STATE_FILE = "archive_state.json"
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash-lite') 
+model = genai.GenerativeModel('gemini-2.5-flash-lite') 
 
 MONTHS = {
     1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
@@ -42,33 +41,39 @@ def save_state(state):
 
 def generate_content(product_name, original_desc, launch_date):
     prompt_pitch = f"""
-    متن اصلی محصول: "{original_desc}"
+    متن خام (توضیحات سازنده): "{original_desc}"
     
-    وظیفه: این متن را به فارسی روان بازنویسی کن.
-    - بر روی **نوآوری و مشکلی که حل می‌کند** تمرکز کن.
-    - طول متن: 5 تا 15 خط.
-    - اگر متن کوتاه است، کوتاه بنویس.
-    - لحن: جذاب و تکنولوژیک.
+    وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را برای مخاطبان معرفی کن.
+    
+    قوانین نگارش:
+    1. **لحن راوی:** متن را کاملاً از زبان خودت (سوم شخص / دانای کل) بنویس. اصلاً از لحن فاندر (اول شخص / تبلیغاتی) استفاده نکن. همه پست‌ها باید لحن یکدست و ژورنالیستی داشته باشند.
+    2. **پوشش کامل:** متن را بخوان، درک کن و سپس توضیح بده:
+       - این محصول دقیقاً چیست؟ (اپلیکیشن، پلتفرم، سخت‌افزار؟)
+       - چه کارکردی دارد و چه ویژگی‌های مهمی ارائه می‌دهد؟
+       - چه مشکلی را حل می‌کند؟
+    3. **طول متن:** بین 5 تا 15 خط (بسته به غنای محتوای ورودی).
+    4. **زبان:** فارسی روان، جذاب و تخصصی.
     """
     try:
         pitch_res = model.generate_content(prompt_pitch).text.strip()
+        time.sleep(5)
     except:
         pitch_res = "توضیحات در دسترس نیست."
 
     prompt_history = f"""
     محصول: {product_name}
     تاریخ عرضه: {launch_date}
-    توضیحات: {original_desc[:200]}...
+    توضیحات کلی: {original_desc[:200]}...
 
-    وظیفه: به عنوان یک کارشناس استارتاپ، یک تحلیل کوتاه (3 تا 5 خط) درباره سرنوشت این محصول بنویس.
-    1. الان این محصول کجاست؟ (فعال، شکست‌خورده، خریداری شده توسط شرکت دیگر؟)
+    وظیفه: به عنوان تحلیل‌گر استارتاپ، یک بررسی کوتاه (3 تا 5 خط) درباره وضعیت این محصول انجام بده.
+    1. با استفاده از ابزار جستجو (Search) یا دانش خودت بررسی کن: الان این محصول کجاست؟ (فعال، شکست‌خورده، یا خریداری شده؟)
     2. مدل درآمدی‌اش چیست؟
-    3. اطلاعات بخش توضیحات را تکرار نکن.
-    4. شروع جمله با: "جمنای: ..."
+    3. نکته مهم: اطلاعاتی که در بخش "معرفی محصول" قابل حدس است را تکرار نکن. فقط اطلاعات جدید (تاریخچه، وضعیت فعلی، بیزنس مدل) بده.
+    4. شروع جمله حتماً با: "جمنای: ..."
     """
     try:
-        time.sleep(2)
         history_res = model.generate_content(prompt_history).text.strip()
+        time.sleep(5)
     except:
         history_res = "جمنای: اطلاعات تاریخی دقیقی یافت نشد."
         
@@ -111,13 +116,13 @@ def send_to_telegram(data):
 
 def run_scraper():
     state = load_state()
-    posts_sent = 0
+    start_month_for_run = state['month']
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        while posts_sent < MAX_POSTS_PER_RUN:
+        while state['month'] == start_month_for_run:
             year = state['year']
             month = state['month']
             
@@ -146,7 +151,7 @@ def run_scraper():
                         state['month'] = 1
                         state['year'] += 1
                     save_state(state)
-                    continue
+                    break
 
                 item = items[current_idx]
                 
@@ -206,7 +211,6 @@ def run_scraper():
                     
                     send_to_telegram(post_data)
                     
-                    posts_sent += 1
                     state['product_idx'] += 1
                     save_state(state)
                     
