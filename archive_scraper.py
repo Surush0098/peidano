@@ -46,10 +46,10 @@ def generate_content(product_name, original_desc, maker_comment, launch_date):
 
     prompt_pitch = f"""
     اطلاعات محصول: {combined_text}
-    وظیفه: تو سردبیر ارشد کانال Peidano هستی.
+    وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
     قوانین:
     1. منبع: به متن "Maker's Comment" اولویت بده.
-    2. لحن: سوم شخص (دانای کل).
+    2. لحن راوی: سوم شخص (دانای کل).
     3. محتوا: چیست؟ چه مشکلی را حل می‌کند؟ چه ویژگی‌هایی دارد؟
     4. طول: 5 تا 15 خط.
     5. زبان: فارسی روان.
@@ -64,7 +64,7 @@ def generate_content(product_name, original_desc, maker_comment, launch_date):
     محصول: {product_name} ({launch_date})
     توضیحات: {original_desc[:200]}...
     وظیفه: تحلیل کوتاه (3 تا 5 خط) وضعیت فعلی.
-    1. الان کجاست؟ (فعال/شکست‌خورده/فروخته شده)
+    1. با سرچ یا دانش خودت: الان کجاست؟ (فعال/شکست‌خورده/فروخته شده)
     2. مدل درآمدی؟
     3. شروع با: "جمنای: ..."
     """
@@ -116,14 +116,12 @@ def run_scraper():
     state = load_state()
     current_run_month = state['month']
     
-    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']}", flush=True)
+    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        # تنظیمات مرورگر واقعی‌تر
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         )
         page = context.new_page()
 
@@ -139,20 +137,25 @@ def run_scraper():
             print(f"📄 Opening: {url}", flush=True)
             
             try:
-                # تغییر مهم: انتظار برای Network Idle (یعنی لود کامل کامل)
-                page.goto(url, timeout=90000, wait_until="networkidle")
-                time.sleep(5)
+                page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 
+                # --- تغییر حیاتی: اجبار به صبر تا دیدن لینک پست ---
+                print("   Waiting for content to hydrate...", flush=True)
+                try:
+                    # صبر میکنیم تا اولین لینک محصول ظاهر شود
+                    page.wait_for_selector('a[href*="/posts/"]', timeout=30000)
+                except:
+                    print("⚠️ Timeout waiting for /posts/ links. Page might be empty or diff structure.", flush=True)
+
+                time.sleep(3)
                 print(f"   Page Title: {page.title()}", flush=True)
 
-                # اسکرول
                 for _ in range(5):
                     page.mouse.wheel(0, 3000)
                     time.sleep(1)
 
-                # استراتژی شکار کور (گرفتن همه لینک‌ها و فیلتر در پایتون)
-                all_links = page.locator('a').all()
-                print(f"   Total raw links on page: {len(all_links)}", flush=True)
+                all_links = page.locator('a[href*="/posts/"]').all()
+                print(f"   Raw product links found: {len(all_links)}", flush=True)
                 
                 unique_products = []
                 seen_urls = set()
@@ -162,16 +165,10 @@ def run_scraper():
                         href = link.get_attribute("href")
                         if not href: continue
                         
-                        # پروداکت هانت قدیم از /posts/ و جدیدا گاهی از /products/ استفاده میکنه
-                        # ما هر دو رو چک میکنیم
-                        is_product = "/posts/" in href or "/products/" in href
-                        is_clean = "#" not in href and "/reviews" not in href and "/alternatives" not in href
-                        
-                        if is_product and is_clean:
+                        if ("/posts/" in href or "/products/" in href) and "#" not in href and "/reviews" not in href:
                             full_url = "https://www.producthunt.com" + href
                             if full_url not in seen_urls:
                                 text = link.inner_text().strip()
-                                # فیلتر: لینک باید متن داشته باشه (تیتر محصول)
                                 if text and len(text) > 1:
                                     unique_products.append({"url": full_url, "title": text})
                                     seen_urls.add(full_url)
@@ -180,11 +177,8 @@ def run_scraper():
                 items = unique_products[:TOP_N_MONTHLY]
                 print(f"   Filtered Products: {len(items)}", flush=True)
                 
-                # --- دیباگ: اگر خالی بود، محتوای صفحه رو نشون بده ---
                 if not items:
-                    print("❌ No items found.", flush=True)
-                    content_preview = page.content()[:500]
-                    print(f"PAGE CONTENT PREVIEW:\n{content_preview}", flush=True)
+                    print("❌ No items found. Skipping month logic...", flush=True)
                     break
 
                 current_idx = state['product_idx']
