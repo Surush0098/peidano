@@ -39,20 +39,21 @@ def save_state(state):
     os.system(f'git commit -m "Update state"')
     os.system('git push')
 
-def generate_content(product_name, original_desc, launch_date):
+def generate_content(product_name, original_desc, maker_comment, launch_date):
+    combined_text = f"Main Description: {original_desc}\n\nMaker's Comment (Story behind product): {maker_comment}"
+
     prompt_pitch = f"""
-    متن خام (توضیحات سازنده): "{original_desc}"
+    اطلاعات محصول:
+    {combined_text}
     
-    وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را برای مخاطبان معرفی کن.
+    وظیفه: تو سردبیر ارشد کانال Peidano هستی. این محصول را معرفی کن.
     
-    قوانین نگارش:
-    1. **لحن راوی:** متن را کاملاً از زبان خودت (سوم شخص / دانای کل) بنویس. اصلاً از لحن فاندر (اول شخص / تبلیغاتی) استفاده نکن. همه پست‌ها باید لحن یکدست و ژورنالیستی داشته باشند.
-    2. **پوشش کامل:** متن را بخوان، درک کن و سپس توضیح بده:
-       - این محصول دقیقاً چیست؟ (اپلیکیشن، پلتفرم، سخت‌افزار؟)
-       - چه کارکردی دارد و چه ویژگی‌های مهمی ارائه می‌دهد؟
-       - چه مشکلی را حل می‌کند؟
-    3. **طول متن:** بین 5 تا 15 خط (بسته به غنای محتوای ورودی).
-    4. **زبان:** فارسی روان، جذاب و تخصصی.
+    قوانین مهم:
+    1. **منبع:** برای درک "هدف و داستان" محصول، به متن "Maker's Comment" اولویت بده. توضیحات فنی را از "Main Description" بگیر.
+    2. **لحن:** سوم شخص (دانای کل). اصلاً از زبان سازنده (من ساختم...) ننویس.
+    3. **محتوا:** دقیقاً بگو چیست؟ چه دردی را دوا می‌کند؟ و چه ویژگی خاصی دارد؟
+    4. **طول:** 5 تا 15 خط.
+    5. **زبان:** فارسی روان و جذاب.
     """
     try:
         pitch_res = model.generate_content(prompt_pitch).text.strip()
@@ -63,13 +64,13 @@ def generate_content(product_name, original_desc, launch_date):
     prompt_history = f"""
     محصول: {product_name}
     تاریخ عرضه: {launch_date}
-    توضیحات کلی: {original_desc[:200]}...
+    توضیحات: {original_desc[:200]}...
 
-    وظیفه: به عنوان تحلیل‌گر استارتاپ، یک بررسی کوتاه (3 تا 5 خط) درباره وضعیت این محصول انجام بده.
-    1. با استفاده از ابزار جستجو (Search) یا دانش خودت بررسی کن: الان این محصول کجاست؟ (فعال، شکست‌خورده، یا خریداری شده؟)
+    وظیفه: تحلیل کوتاه (3 تا 5 خط) درباره وضعیت فعلی محصول.
+    1. با استفاده از ابزار جستجو (Search) یا دانش خودت: الان این محصول کجاست؟ (فعال، شکست‌خورده، یا فروخته شده؟)
     2. مدل درآمدی‌اش چیست؟
-    3. نکته مهم: اطلاعاتی که در بخش "معرفی محصول" قابل حدس است را تکرار نکن. فقط اطلاعات جدید (تاریخچه، وضعیت فعلی، بیزنس مدل) بده.
-    4. شروع جمله حتماً با: "جمنای: ..."
+    3. تکرار نکن! اطلاعاتی که در بخش معرفی گفتی را اینجا نگو. فقط اطلاعات جدید (تاریخچه/بیزنس).
+    4. شروع جمله با: "جمنای: ..."
     """
     try:
         history_res = model.generate_content(prompt_history).text.strip()
@@ -183,6 +184,14 @@ def run_scraper():
                     except:
                         desc = title
 
+                    maker_comment = ""
+                    try:
+                        # تلاش برای پیدا کردن اولین کامنت (که معمولا مال سازنده است)
+                        comment_el = p_page.locator('div[class*="styles_commentBody__"]').first
+                        if comment_el.is_visible():
+                            maker_comment = comment_el.inner_text()
+                    except: pass
+
                     images = []
                     try:
                         img_els = p_page.locator('img[class*="styles_mediaImage__"]').all()
@@ -196,7 +205,7 @@ def run_scraper():
                     p_page.close()
 
                     date_str = f"{MONTHS[month]} {year}"
-                    pitch_text, history_text = generate_content(title, desc, date_str)
+                    pitch_text, history_text = generate_content(title, desc, maker_comment, date_str)
                     
                     post_data = {
                         "title": title,
