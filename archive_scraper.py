@@ -120,7 +120,7 @@ def run_scraper():
     print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         )
@@ -141,39 +141,40 @@ def run_scraper():
                 page.goto(url, timeout=90000, wait_until="domcontentloaded")
                 time.sleep(5)
                 
-                print(f"   Page Title: {page.title()}", flush=True)
-
+                # اسکرول سنگین برای لود شدن همه آیتم‌ها
                 for _ in range(5):
-                    page.mouse.wheel(0, 2000)
+                    page.mouse.wheel(0, 3000)
                     time.sleep(1)
 
-                # استراتژی 1: استفاده از data-test (طبق عکس شما)
-                items = page.locator('[data-test^="post-item-"]').all()
+                # استراتژی شکار لینک (Universal Link Discovery)
+                # تمام لینک‌هایی که به /posts/ میرن رو پیدا میکنیم
+                all_links = page.locator('a[href*="/posts/"]').all()
                 
-                # استراتژی 2: فال‌بک به لینک‌ها اگر اولی کار نکرد
-                if not items:
-                    print("⚠️ data-test selector failed. Switching to Link Discovery...", flush=True)
-                    all_links = page.locator('a[href*="/posts/"]').all()
-                    unique_products = []
-                    seen_urls = set()
-                    for link in all_links:
-                        try:
-                            href = link.get_attribute("href")
-                            if href and "/posts/" in href and "#" not in href and "/reviews" not in href:
-                                full_url = "https://www.producthunt.com" + href
-                                if full_url not in seen_urls:
-                                    # فیلتر کردن لینک‌های خیلی کوتاه که محصول نیستن
-                                    if len(href) > 8:
-                                        unique_products.append({"url": full_url, "element": link})
-                                        seen_urls.add(full_url)
-                        except: pass
-                    items = unique_products
+                unique_products = []
+                seen_urls = set()
+                
+                print(f"   Raw links found: {len(all_links)}", flush=True)
 
-                items = items[:TOP_N_MONTHLY]
-                print(f"   Found {len(items)} products.", flush=True)
+                for link in all_links:
+                    try:
+                        href = link.get_attribute("href")
+                        # فیلتر کردن لینک‌های تمیز
+                        if href and "/posts/" in href and "#" not in href and "/reviews" not in href:
+                            full_url = "https://www.producthunt.com" + href
+                            
+                            if full_url not in seen_urls:
+                                text = link.inner_text().strip()
+                                # شرط: لینک باید متن داشته باشه (تیتر محصول) و خیلی کوتاه نباشه
+                                if text and len(text) > 2:
+                                    unique_products.append({"url": full_url, "title": text})
+                                    seen_urls.add(full_url)
+                    except: pass
+
+                items = unique_products[:TOP_N_MONTHLY]
+                print(f"   Filtered Products: {len(items)}", flush=True)
                 
                 if not items:
-                    print("❌ No items found. Checking fallback logic...", flush=True)
+                    print("❌ No items found. Check Page logic.", flush=True)
                     break
 
                 current_idx = state['product_idx']
@@ -188,30 +189,11 @@ def run_scraper():
                     save_state(state)
                     break
 
-                # استخراج لینک از آیتم پیدا شده
-                try:
-                    item_obj = items[current_idx]
-                    
-                    # اگر آیتم از نوع Locator باشه (استراتژی 1)
-                    if hasattr(item_obj, 'get_attribute'):
-                        # باید لینک داخلش رو پیدا کنیم. معمولا اولین لینک، لینک محصوله
-                        link_el = item_obj.locator('a').first
-                        href = link_el.get_attribute("href")
-                        ph_link = "https://www.producthunt.com" + href
-                        title = item_obj.inner_text().split('\n')[0]
-                    else:
-                        # اگر از نوع دیکشنری باشه (استراتژی 2)
-                        ph_link = item_obj['url']
-                        try:
-                            title = item_obj['element'].inner_text().split('\n')[0]
-                        except: title = "Product"
+                item_data = items[current_idx]
+                ph_link = item_data['url']
+                title = item_data['title'].split('\n')[0]
 
-                except Exception as e:
-                    print(f"   Error parsing list item: {e}. Skipping.", flush=True)
-                    state['product_idx'] += 1
-                    continue
-
-                print(f"🔍 Processing: {ph_link}", flush=True)
+                print(f"🔍 Processing: {title}", flush=True)
 
                 p_page = context.new_page()
                 try:
@@ -219,7 +201,8 @@ def run_scraper():
                     time.sleep(3)
                     
                     try:
-                        title = p_page.locator('h1').first.inner_text()
+                        h1 = p_page.locator('h1').first.inner_text()
+                        if h1: title = h1
                     except: pass
 
                     try:
