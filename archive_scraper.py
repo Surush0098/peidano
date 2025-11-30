@@ -116,13 +116,13 @@ def send_to_telegram(data):
 
 def run_scraper():
     state = load_state()
-    start_month_for_run = state['month']
+    current_run_month = state['month']
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        while state['month'] == start_month_for_run:
+        while state['month'] == current_run_month:
             year = state['year']
             month = state['month']
             
