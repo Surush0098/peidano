@@ -130,7 +130,7 @@ def run_scraper():
             if year >= END_YEAR:
                 break
 
-            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}/all"
+            url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
             
             try:
                 page.goto(url, timeout=60000)
