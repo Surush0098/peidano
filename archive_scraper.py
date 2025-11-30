@@ -4,7 +4,6 @@ import time
 import requests
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
@@ -118,23 +117,28 @@ def run_scraper():
     state = load_state()
     current_run_month = state['month']
     
-    print(f"🚀 Starting scraper (Stealth Mode). Target: {state['year']}/{state['month']}", flush=True)
+    print(f"🚀 Starting scraper. Target: {state['year']}/{state['month']} - Start Index: {state['product_idx']}", flush=True)
 
     with sync_playwright() as p:
+        # تنظیمات دستی مرورگر برای استتار (بدون نیاز به کتابخانه اضافی)
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+            viewport={"width": 1920, "height": 1080},
+            java_script_enabled=True
         )
         
+        # تزریق اسکریپت برای مخفی کردن کامل webdriver
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         page = context.new_page()
-        stealth_sync(page) # فعال سازی حالت نامرئی
 
         while state['month'] == current_run_month:
             year = state['year']
             month = state['month']
             
             if year >= END_YEAR:
+                print("End of years reached.", flush=True)
                 break
 
             url = f"https://www.producthunt.com/leaderboard/monthly/{year}/{month}"
@@ -142,28 +146,23 @@ def run_scraper():
             
             try:
                 page.goto(url, timeout=90000, wait_until="domcontentloaded")
-                time.sleep(5) # صبر اولیه
+                time.sleep(5)
                 
-                # چاپ عنوان صفحه برای دیباگ (ببینیم بلاک شدیم یا نه)
+                # چاپ عنوان صفحه برای دیباگ
                 print(f"   Page Title: {page.title()}", flush=True)
 
-                # اسکرول سنگین برای لود شدن
                 for _ in range(5):
                     page.mouse.wheel(0, 1500)
                     time.sleep(1)
 
-                # تلاش برای پیدا کردن لینک محصولات با روشی متفاوت (CSS Selector)
-                # دنبال لینک‌هایی می‌گردیم که در آدرسشون /posts/ باشه و کلاس تایتل نداشته باشه (جلوگیری از تکرار)
                 product_links = page.locator('div[class*="styles_item"] a[href^="/posts/"]').all()
                 
-                # فیلتر کردن لینک‌های تکراری و به درد نخور
                 unique_links = []
                 seen_urls = set()
                 
                 for link in product_links:
                     try:
                         href = link.get_attribute("href")
-                        # فقط لینک‌های تمیز محصول
                         if href and "/posts/" in href and "#" not in href and "reviews" not in href:
                             full_url = "https://www.producthunt.com" + href
                             if full_url not in seen_urls:
@@ -190,28 +189,24 @@ def run_scraper():
                     save_state(state)
                     break
 
-                # پردازش محصول
                 item_data = items[current_idx]
                 ph_link = item_data['url']
                 
-                # تلاش برای گرفتن اسم از لیست (اگر نشد از صفحه محصول می‌گیریم)
                 try:
                     title = item_data['element'].inner_text().split('\n')[0]
                 except: title = "Unknown Product"
 
                 print(f"🔍 Processing: {ph_link}", flush=True)
 
-                # باز کردن صفحه محصول
                 p_page = context.new_page()
-                stealth_sync(p_page)
+                # تزریق اسکریپت مخفی‌کاری در تب جدید هم انجام شود
+                p_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 
                 try:
                     p_page.goto(ph_link, timeout=60000, wait_until="domcontentloaded")
                     time.sleep(3)
                     
-                    # استخراج اطلاعات دقیق
                     try:
-                        # گرفتن تایتل دقیق از صفحه محصول
                         title = p_page.locator('h1').first.inner_text()
                     except: pass
 
@@ -223,7 +218,6 @@ def run_scraper():
                         desc = p_page.locator('div[class*="styles_description"]').first.inner_text()
                     except: desc = title
 
-                    # استخراج تگ‌ها از صفحه محصول
                     hashtags = "#Tech"
                     try:
                         tag_els = p_page.locator('div[class*="styles_topics"] a').all()
