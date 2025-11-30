@@ -2,4 +2,3 @@ requests
 google-generativeai
 playwright
 beautifulsoup4
-playwright-stealth
