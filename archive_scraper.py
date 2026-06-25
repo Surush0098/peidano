@@ -17,7 +17,7 @@ TOP_N_MONTHLY = 25
 STATE_FILE = "archive_state.json"
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash-lite') 
+model = genai.GenerativeModel('gemini-3.1-flash-lite') 
 
 MONTHS = {
     1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
